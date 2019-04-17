@@ -22,7 +22,7 @@ class PolymorphicDense(Layer):
     def __init__(self,
                  units,
                  modes,
-                 key_size,
+                 key_size = None,
                  activation=None,
                  use_bias=True,
                  kernel_initializer='glorot_uniform',
@@ -39,7 +39,17 @@ class PolymorphicDense(Layer):
         super(PolymorphicDense, self).__init__(
             activity_regularizer=regularizers.get(activity_regularizer), **kwargs)
         self.units = int(units)
+        
+        # How many differnt weights+biases sets this layer will contain
+        # Normal Dense layer implicitly has exactly 1 mode 
         self.modes = int(modes)
+        
+        # If key size was not provided then considering it as an logarithm 
+        # of modes count. In this case number of parameters will grow linearly
+        # depending on modes count
+        if key_size is None:
+            key_size = int(1. + np.log(modes))
+            
         self.key_size = int(key_size)
 
         self.activation = activations.get(activation)
@@ -67,15 +77,17 @@ class PolymorphicDense(Layer):
         self.input_spec = InputSpec(min_ndim=2,
                                     axes={-1: self.last_dim})
 
-        #         self.similarity_sensitivity = self.add_weight(
-        #             'similarity_sensitivity',
-        #             shape=[],
-        #             initializer=self.kernel_initializer,
-        #             regularizer=self.kernel_regularizer,
-        #             constraint=self.kernel_constraint,
-        #             dtype=self.dtype,
-        #             trainable=True)
-
+        # Scalar that defines distance sensitivity when key is compared with
+        # keys map
+        self.similarity_sensitivity = self.add_weight(
+            'similarity_sensitivity',
+            shape=[],
+            initializer=initializers.Ones(),
+            regularizer=self.kernel_regularizer,
+            dtype=self.dtype,
+            trainable=True)
+        
+        # Key generation weights
         self.key_kernel = self.add_weight(
             'key_kernel',
             shape=[self.last_dim, self.key_size],
@@ -85,6 +97,7 @@ class PolymorphicDense(Layer):
             dtype=self.dtype,
             trainable=True)
 
+        # Key generation bias
         self.key_bias = self.add_weight(
             'key_bias',
             shape=[self.key_size],
@@ -94,6 +107,7 @@ class PolymorphicDense(Layer):
             dtype=self.dtype,
             trainable=True)
 
+        # Keys map that is compared with generated keys 
         self.keys_map = self.add_weight(
             'keys_map',
             shape=[self.modes, self.key_size],
@@ -103,6 +117,7 @@ class PolymorphicDense(Layer):
             dtype=self.dtype,
             trainable=True)
 
+        # Inputs processing weights map
         self.kernels = self.add_weight(
             'kernels',
             shape=[self.modes, self.last_dim, self.units],
@@ -113,6 +128,7 @@ class PolymorphicDense(Layer):
             trainable=True)
 
         if self.use_bias:
+            # Inputs processing biases map
             self.biases = self.add_weight(
                 'biases',
                 shape=[self.modes, self.units],
@@ -125,75 +141,53 @@ class PolymorphicDense(Layer):
             self.biases = None
         super(PolymorphicDense, self).build(input_shape)
 
-    def call(self, inp):
-        inputs = inp
+    def call(self, inputs):
         shape = inputs.shape.as_list()
         rank = common_shapes.rank(inputs)
 
-        print('inputs')
-        print(inputs.shape)
-
+        # This is same as linear output of a normal dense layer but
+        # it's not used as layer output. Instead, this value (key) is
+        # used to calculate the actual weights.
         key = standard_ops.tensordot(inputs, self.key_kernel, [[rank - 1], [0]])
-
-        print('key')
-        print(key.shape)
-
-        print('key_bias')
-        print(self.key_bias.shape)
         key = key + self.key_bias
-
-        print('key')
-        print(key.shape)
 
         def similarity(keys, keys_table):
             a = tf.expand_dims(keys, -2)
             dist = tf.math.sqrt(tf.math.reduce_sum(tf.pow(a - keys_table, 2), axis=-1))
+            dist *= self.similarity_sensitivity
             return 1. / (dist + 1.)
 
+        # Now we compare our key with keys tensor and get the list
+        # of M similarities scalars where M is modes count
         raw_similarity = similarity(key, self.keys_map)
 
-        print('raw_similarity')
-        print(raw_similarity.shape)
-
+        # Adding dimensions for proper multiplication with kernels tensor
         key_similarity = raw_similarity
         key_similarity = tf.expand_dims(key_similarity, -1)
         key_similarity = tf.expand_dims(key_similarity, -1)
+        
+        # Generating tensor of M weights where M is modes count. 
+        # Each weight is taken from kernels tensor and then multiplied by 
+        # corresponding similarity
         weighted_weights = key_similarity * self.kernels
 
-        print('weighted_weights')
-        print(weighted_weights.shape)
-
-        def replace_none(x):
-            if x is None:
-                return -1
-            return x
-
+        # Reducing weighted weights table into one weight (kernel)
+        # that will be used as a normal Dense layer kernel
         kernel = tf.math.reduce_mean(weighted_weights, axis=-3)
-
-        print('kernel')
-        print(kernel.shape)
 
         def broadcasted_matmul(a, b):
             return tf.math.reduce_sum(tf.expand_dims(a, -1) * b, axis=-2)
 
         outputs = broadcasted_matmul(inputs, kernel)
 
-        print('output')
-        print(outputs.shape)
-
         if self.use_bias:
+            # Similar excercise as was done for kernels tensor above,
+            # but for bias this time
             key_similarity = raw_similarity
             key_similarity = tf.expand_dims(key_similarity, -1)
             weighted_biases = key_similarity * self.biases
-
-            print('weighted_biases')
-            print(weighted_biases.shape)
-
             bias = tf.math.reduce_mean(weighted_biases, axis=-2)
-
-            print('bias')
-            print(bias.shape)
-
+            
             outputs = outputs + bias
 
         if self.activation is not None:
