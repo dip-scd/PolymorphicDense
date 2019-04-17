@@ -25,13 +25,20 @@ class PolymorphicDense(Layer):
                  key_size = None,
                  activation=None,
                  use_bias=True,
+                 use_key_bias=None,
                  kernel_initializer='glorot_uniform',
+                 key_kernel_initializer=None,
                  bias_initializer='zeros',
+                 key_bias_initializer=None,
                  kernel_regularizer=None,
+                 key_kernel_regularizer=None,
                  bias_regularizer=None,
+                 key_bias_regularizer=None,
                  activity_regularizer=None,
                  kernel_constraint=None,
+                 key_kernel_constraint=None,
                  bias_constraint=None,
+                 key_bias_constraint=None,
                  **kwargs):
         if 'input_shape' not in kwargs and 'input_dim' in kwargs:
             kwargs['input_shape'] = (kwargs.pop('input_dim'),)
@@ -41,12 +48,12 @@ class PolymorphicDense(Layer):
         self.units = int(units)
         
         # How many differnt weights+biases sets this layer will contain
-        # Normal Dense layer implicitly has exactly 1 mode 
+        # Normal Dense layer implicitly has exactly 1 mode.
         self.modes = int(modes)
         
-        # If key size was not provided then considering it as an logarithm 
-        # of modes count. In this case number of parameters will grow linearly
-        # depending on modes count
+        # If key size was not provided then specifying it as a logarithm 
+        # of modes count. In this case number of parameters will be O(m)
+        # where m is modes count.
         if key_size is None:
             key_size = int(1. + np.log(modes))
             
@@ -54,12 +61,45 @@ class PolymorphicDense(Layer):
 
         self.activation = activations.get(activation)
         self.use_bias = use_bias
+        
+        # If use_key_bias was not specified then defaulting to use_bias
+        if use_key_bias is None:
+            use_key_bias = use_bias
+        self.use_key_bias = use_key_bias
+        
+        # If initalizer, reguralizer, contstraint values were not
+        # provided for key kernel and bias then defaulting to what 
+        # was provided for normal kernel and bias tensors
+        if key_kernel_initializer is None:
+            key_kernel_initializer = kernel_initializer
+            
+        if key_bias_initializer is None:
+            key_bias_initializer = bias_initializer
+            
+        if key_kernel_regularizer is None:
+            key_kernel_regularizer = kernel_regularizer
+            
+        if key_bias_regularizer is None:
+            key_bias_regularizer = bias_regularizer
+            
+        if key_kernel_constraint is None:
+            key_kernel_constraint = kernel_constraint
+            
+        if key_bias_constraint is None:
+            key_bias_constraint = bias_constraint
+        
         self.kernel_initializer = initializers.get(kernel_initializer)
+        self.key_kernel_initializer = initializers.get(key_kernel_initializer)
         self.bias_initializer = initializers.get(bias_initializer)
+        self.key_bias_initializer = initializers.get(key_bias_initializer)
         self.kernel_regularizer = regularizers.get(kernel_regularizer)
+        self.key_kernel_regularizer = regularizers.get(key_kernel_regularizer)
         self.bias_regularizer = regularizers.get(bias_regularizer)
+        self.key_bias_regularizer = regularizers.get(key_bias_regularizer)
         self.kernel_constraint = constraints.get(kernel_constraint)
+        self.key_kernel_constraint = constraints.get(key_kernel_constraint)
         self.bias_constraint = constraints.get(bias_constraint)
+        self.key_bias_constraint = constraints.get(key_bias_constraint)
 
         self.supports_masking = True
         self.input_spec = InputSpec(min_ndim=2)
@@ -149,7 +189,9 @@ class PolymorphicDense(Layer):
         # it's not used as layer output. Instead, this value (key) is
         # used to calculate the actual weights.
         key = standard_ops.tensordot(inputs, self.key_kernel, [[rank - 1], [0]])
-        key = key + self.key_bias
+        
+        if self.use_key_bias:
+            key = key + self.key_bias
 
         def similarity(keys, keys_table):
             a = tf.expand_dims(keys, -2)
@@ -158,7 +200,7 @@ class PolymorphicDense(Layer):
             return 1. / (dist + 1.)
 
         # Now we compare our key with keys tensor and get the list
-        # of M similarities scalars where M is modes count
+        # of m similarities scalars where m is modes count
         raw_similarity = similarity(key, self.keys_map)
 
         # Adding dimensions for proper multiplication with kernels tensor
@@ -166,13 +208,13 @@ class PolymorphicDense(Layer):
         key_similarity = tf.expand_dims(key_similarity, -1)
         key_similarity = tf.expand_dims(key_similarity, -1)
         
-        # Generating tensor of M weights where M is modes count. 
+        # Generating tensor of M weights where m is modes count. 
         # Each weight is taken from kernels tensor and then multiplied by 
-        # corresponding similarity
+        # corresponding similarity.
         weighted_weights = key_similarity * self.kernels
 
         # Reducing weighted weights table into one weight (kernel)
-        # that will be used as a normal Dense layer kernel
+        # that will be used as a normal Dense layer kernel.
         kernel = tf.math.reduce_mean(weighted_weights, axis=-3)
 
         def broadcasted_matmul(a, b):
@@ -182,7 +224,7 @@ class PolymorphicDense(Layer):
 
         if self.use_bias:
             # Similar excercise as was done for kernels tensor above,
-            # but for bias this time
+            # but for bias this time.
             key_similarity = raw_similarity
             key_similarity = tf.expand_dims(key_similarity, -1)
             weighted_biases = key_similarity * self.biases
@@ -211,14 +253,21 @@ class PolymorphicDense(Layer):
             'key_size': self.key_size,
             'activation': activations.serialize(self.activation),
             'use_bias': self.use_bias,
+            'use_key_bias': self.use_key_bias,
             'kernel_initializer': initializers.serialize(self.kernel_initializer),
+            'key_kernel_initializer': initializers.serialize(self.key_kernel_initializer),
             'bias_initializer': initializers.serialize(self.bias_initializer),
+            'key_bias_initializer': initializers.serialize(self.key_bias_initializer),
             'kernel_regularizer': regularizers.serialize(self.kernel_regularizer),
+            'key_kernel_regularizer': regularizers.serialize(self.key_kernel_regularizer),
             'bias_regularizer': regularizers.serialize(self.bias_regularizer),
+            'key_bias_regularizer': regularizers.serialize(self.key_bias_regularizer),
             'activity_regularizer':
                 regularizers.serialize(self.activity_regularizer),
             'kernel_constraint': constraints.serialize(self.kernel_constraint),
-            'bias_constraint': constraints.serialize(self.bias_constraint)
+            'key_kernel_constraint': constraints.serialize(self.key_kernel_constraint),
+            'bias_constraint': constraints.serialize(self.bias_constraint),
+            'key_bias_constraint': constraints.serialize(self.key_bias_constraint)
         }
         base_config = super(PolymorphicDense, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
