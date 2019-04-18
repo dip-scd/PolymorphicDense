@@ -206,6 +206,7 @@ class PolymorphicDense(PolymorphicDenseBase):
         super(PolymorphicDense, self).__init__(
             units=units,
             modes=modes,
+            activation=activation,
             use_bias=use_bias,
             kernel_initializer=kernel_initializer,
             bias_initializer=bias_initializer,
@@ -317,4 +318,68 @@ class PolymorphicDense(PolymorphicDenseBase):
             'key_bias_constraint': constraints.serialize(self.key_bias_constraint)
         }
         base_config = super(PolymorphicDense, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+    
+    
+    
+class ControlledPolymorphicDense(PolymorphicDenseBase):
+
+    def __init__(self,
+                 units,
+                 modes,
+                 activation=None,
+                 use_bias=True,
+                 kernel_initializer='glorot_uniform',
+                 bias_initializer='zeros',
+                 kernel_regularizer=None,
+                 bias_regularizer=None,
+                 activity_regularizer=None,
+                 kernel_constraint=None,
+                 bias_constraint=None,
+                 **kwargs):
+        super(ControlledPolymorphicDense, self).__init__(
+            units=units,
+            modes=modes,
+            activation=activation,
+            use_bias=use_bias,
+            kernel_initializer=kernel_initializer,
+            bias_initializer=bias_initializer,
+            kernel_regularizer=kernel_regularizer,
+            bias_regularizer=bias_regularizer,
+            activity_regularizer=activity_regularizer,
+            kernel_constraint=kernel_constraint,
+            bias_constraint=bias_constraint, **kwargs)
+
+    def build(self, input_shape):        
+        if not (isinstance(input_shape, (list,)) and len(input_shape) == 2):
+            raise ValueError('This layer expects a list with 2 elements: key and input.')
+        
+        key_shape = input_shape[0]
+        input_shape = input_shape[1]
+        dtype = dtypes.as_dtype(self.dtype or K.floatx())
+        if not (dtype.is_floating or dtype.is_complex):
+            raise TypeError('Unable to build `ControlledPolymorphicDense` layer with non-floating point '
+                            'dtype %s' % (dtype,))
+        input_shape = tensor_shape.TensorShape(input_shape)
+        if tensor_shape.dimension_value(input_shape[-1]) is None:
+            raise ValueError('The last dimension of the inputs to `ControlledPolymorphicDense` '
+                             'should be defined. Found `None`.')
+        key_shape = tensor_shape.TensorShape(key_shape)
+        if tensor_shape.dimension_value(key_shape[-1]) is None:
+            raise ValueError('The last dimension of the key for `ControlledPolymorphicDense` '
+                             'should be defined. Found `None`.')
+        
+        key_size = tensor_shape.dimension_value(key_shape[-1])
+        last_dim = tensor_shape.dimension_value(input_shape[-1])
+        
+        super(ControlledPolymorphicDense, self).build(input_shape, 
+                                            key_size, 
+                                            last_dim)
+        
+    def call(self, inputs):
+        return super(ControlledPolymorphicDense, self).call(inputs[0], inputs[1])
+
+    def get_config(self):
+        config = {}
+        base_config = super(ControlledPolymorphicDense, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
