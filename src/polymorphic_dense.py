@@ -121,7 +121,7 @@ class PolymorphicDense(Layer):
         # keys map
         self.similarity_sensitivity = self.add_weight(
             'similarity_sensitivity',
-            shape=[],
+            shape=[self.modes],
             initializer=initializers.Ones(),
             regularizer=self.kernel_regularizer,
             dtype=self.dtype,
@@ -195,13 +195,17 @@ class PolymorphicDense(Layer):
 
         def similarity(keys, keys_table):
             a = tf.expand_dims(keys, -2)
-            dist = tf.math.sqrt(tf.math.reduce_sum(tf.pow(a - keys_table, 2), axis=-1))
-            dist *= self.similarity_sensitivity
-            return 1. / (dist + 1.)
+            dist = tf.math.sqrt(
+                tf.math.reduce_sum(
+                    tf.pow(a - keys_table, 2)
+                    , axis=-1)
+            )
+            return self.similarity_sensitivity / ((dist + 1.))
 
         # Now we compare our key with keys tensor and get the list
         # of m similarities scalars where m is modes count
         raw_similarity = similarity(key, self.keys_map)
+        raw_similarity = tf.nn.softmax(raw_similarity)
 
         # Adding dimensions for proper multiplication with kernels tensor
         key_similarity = raw_similarity
